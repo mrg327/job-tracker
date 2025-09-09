@@ -94,6 +94,10 @@ class JobTrackerApp:
             "Withdrawn": 5,
         }
 
+        # Search/filter state
+        self.filter_text = ""  # Current search filter
+        self.filtered_jobs = []  # Jobs after applying filter
+
         # Migration: check for old task file
         old_task_file = os.path.expanduser("~/.planner_tasks.json")
         if os.path.exists(old_task_file) and not os.path.exists(self.job_file):
@@ -104,6 +108,9 @@ class JobTrackerApp:
 
         # Apply initial sorting
         self._sort_jobs()
+        
+        # Initialize filter (no filter initially)
+        self._apply_filter()
 
         # Setup signal handling
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -168,6 +175,7 @@ class JobTrackerApp:
                         # New format with metadata
                         self.sort_by_status = data.get("sort_by_status", False)
                         self.sort_ascending = data.get("sort_ascending", False)
+                        self.filter_text = data.get("filter_text", "")
                         jobs_data = data["jobs"]
                     else:
                         # Legacy format - just jobs array
@@ -194,6 +202,7 @@ class JobTrackerApp:
             data = {
                 "sort_by_status": self.sort_by_status,
                 "sort_ascending": self.sort_ascending,
+                "filter_text": self.filter_text,
                 "jobs": []
             }
             
@@ -237,8 +246,8 @@ class JobTrackerApp:
 
         listbox = urwid.ListBox(self.job_list)
 
-        # Footer with instructions including sorting
-        footer_text = " [a]dd [d]el [s]tatus [v]iew | [t]oggle sort [o]rder | [j/k]nav [q]uit "
+        # Footer with instructions including sorting and filtering
+        footer_text = " [a]dd [d]el [s]tatus [v]iew | [/]filter [t]oggle sort [o]rder | [j/k]nav [q]uit "
         self.footer_widget = urwid.AttrMap(urwid.Text(footer_text, align="center"), "footer")
 
         # Main frame
@@ -252,9 +261,18 @@ class JobTrackerApp:
         """Update header with current sort information and storage location."""
         sort_direction = "↑" if self.sort_ascending else "↓"
         sort_name = self._get_sort_display_name()
-        job_count = len(self.jobs)
+        
+        # Show filtered count vs total when filtering
+        if self.filter_text:
+            display_jobs = self._get_display_jobs()
+            job_count = f"{len(display_jobs)}/{len(self.jobs)}"
+            filter_info = f" Filter: '{self.filter_text}' -"
+        else:
+            job_count = str(len(self.jobs))
+            filter_info = ""
+            
         storage_path = self.job_file.replace(os.path.expanduser("~"), "~")  # Show ~ instead of full path
-        header_text = f" Job Tracker - Sort: {sort_name} {sort_direction} - {job_count} apps - Saved: {storage_path} "
+        header_text = f" Job Tracker - Sort: {sort_name} {sort_direction} -{filter_info} {job_count} apps - Saved: {storage_path} "
         
         if hasattr(self, 'header_widget'):
             self.header_widget.original_widget.set_text(header_text)
@@ -266,16 +284,25 @@ class JobTrackerApp:
         # Update header with current info
         self._update_header()
 
-        if not self.jobs:
+        display_jobs = self._get_display_jobs()
+        
+        if not display_jobs:
+            if not self.jobs:
+                # No jobs at all
+                message = "No job applications yet. Press [a] to add one."
+            else:
+                # Jobs exist but filter excludes all
+                message = f"No jobs match filter '{self.filter_text}'. Press [/] to change filter."
+            
             self.job_list.append(
                 urwid.Text(
-                    ("body", "No job applications yet. Press [a] to add one."),
+                    ("body", message),
                     align="center",
                 )
             )
             return
 
-        for i, job in enumerate(self.jobs):
+        for i, job in enumerate(display_jobs):
             emoji = JobApplication.get_status_emoji(job.status)
             status_text = f"[{job.status.upper()}]"
             display_text = f" {emoji} {status_text} {job.company} - {job.position} ({job.date_applied})"
@@ -342,6 +369,31 @@ class JobTrackerApp:
 
         self.jobs.sort(key=sort_key)
 
+    def _apply_filter(self):
+        """Apply current filter to jobs list."""
+        if not self.filter_text:
+            self.filtered_jobs = self.jobs.copy()
+        else:
+            filter_lower = self.filter_text.lower()
+            self.filtered_jobs = [
+                job for job in self.jobs
+                if filter_lower in job.company.lower() or filter_lower in job.position.lower()
+            ]
+
+    def _set_filter(self, filter_text):
+        """Set new filter text and apply it."""
+        self.filter_text = filter_text
+        self._apply_filter()
+
+    def _clear_filter(self):
+        """Clear the current filter."""
+        self.filter_text = ""
+        self._apply_filter()
+
+    def _get_display_jobs(self):
+        """Get the jobs to display (filtered or all jobs)."""
+        return self.filtered_jobs if self.filter_text else self.jobs
+
     def _toggle_sort_mode(self):
         """Toggle between date-only and status+date sorting."""
         self.sort_by_status = not self.sort_by_status
@@ -366,18 +418,22 @@ class JobTrackerApp:
 
         # Apply sorting
         self._sort_jobs()
+        
+        # Apply current filter to sorted jobs
+        self._apply_filter()
 
         # Refresh display
         self._refresh_job_list()
 
         # Try to restore focus to the same job
-        if focused_job and self.jobs:
+        display_jobs = self._get_display_jobs()
+        if focused_job and display_jobs:
             try:
-                new_index = self.jobs.index(focused_job)
+                new_index = display_jobs.index(focused_job)
                 if 0 <= new_index < len(self.job_list):
                     self.job_list.set_focus(new_index)
             except (ValueError, AttributeError):
-                # Job not found or focus failed, default to top
+                # Job not found in filtered list or focus failed, default to top
                 if len(self.job_list) > 0:
                     self.job_list.set_focus(0)
 
@@ -488,11 +544,12 @@ class JobTrackerApp:
         
         # Try to focus on the newly added job
         try:
-            new_index = self.jobs.index(job)
+            display_jobs = self._get_display_jobs()
+            new_index = display_jobs.index(job)
             if 0 <= new_index < len(self.job_list):
                 self.job_list.set_focus(new_index)
         except (ValueError, AttributeError):
-            # Fallback to top
+            # Job might be filtered out or focus failed, default to top
             if len(self.job_list) > 0:
                 self.job_list.set_focus(0)
 
@@ -537,16 +594,97 @@ class JobTrackerApp:
         self.main_loop.unhandled_input = handle_input
         self.main_loop.widget = overlay
 
+    def _show_search_dialog(self):
+        """Show search/filter dialog with live filtering."""
+        edit = urwid.Edit("Filter: ", self.filter_text)  # Pre-fill with current filter
+        status_text = urwid.Text("", align="center")
+        
+        def update_filter_preview():
+            """Update the preview of filter results."""
+            current_text = edit.get_edit_text().strip()
+            
+            # Temporarily apply filter to see results
+            temp_filter = self.filter_text
+            self._set_filter(current_text)
+            display_jobs = self._get_display_jobs()
+            
+            if current_text:
+                if display_jobs:
+                    status_text.set_text(f"Found {len(display_jobs)} matches")
+                else:
+                    status_text.set_text("No matches found")
+            else:
+                status_text.set_text(f"Showing all {len(self.jobs)} jobs")
+            
+            # Restore original filter for now
+            self._set_filter(temp_filter)
+
+        def handle_search_input(key):
+            if key == "enter":
+                # Apply the filter
+                new_filter = edit.get_edit_text().strip()
+                self._set_filter(new_filter)
+                self._refresh_job_list()
+                self.save_jobs()  # Save filter state
+                self.main_loop.widget = self.ui
+                self.main_loop.unhandled_input = old_handler
+                
+            elif key == "esc":
+                # Cancel - restore original filter
+                self.main_loop.widget = self.ui
+                self.main_loop.unhandled_input = old_handler
+                
+            elif key == "ctrl d":
+                # Clear filter
+                edit.set_edit_text("")
+                update_filter_preview()
+                
+            else:
+                # Let the key pass through to edit widget
+                result = edit.keypress((0,), key)
+                update_filter_preview()  # Update preview after each keystroke
+                return result
+
+        # Initialize preview
+        update_filter_preview()
+
+        dialog_content = urwid.Pile([
+            urwid.Text(("header", "Search/Filter Jobs"), align="center"),
+            urwid.Divider(),
+            edit,
+            urwid.Divider(),
+            status_text,
+            urwid.Divider(),
+            urwid.Text("Press Enter to apply, Esc to cancel, Ctrl+D to clear", align="center"),
+        ])
+
+        dialog = urwid.Filler(
+            urwid.AttrMap(
+                urwid.LineBox(urwid.Padding(dialog_content, left=2, right=2)), "body"
+            )
+        )
+
+        overlay = urwid.Overlay(
+            dialog, self.ui, align="center", width=60, valign="middle", height=10
+        )
+
+        old_handler = self.main_loop.unhandled_input
+        self.main_loop.unhandled_input = handle_search_input
+        self.main_loop.widget = overlay
+
     def _delete_current_job(self):
         """Show confirmation dialog before deleting the currently selected job."""
-        if not self.jobs:
+        display_jobs = self._get_display_jobs()
+        if not display_jobs:
             return
 
         try:
             focus_pos = self.job_list.focus
-            if 0 <= focus_pos < len(self.jobs):
-                job = self.jobs[focus_pos]
-                self._show_delete_confirmation(job, focus_pos)
+            if 0 <= focus_pos < len(display_jobs):
+                job = display_jobs[focus_pos]
+                # Find the actual index in the main jobs list
+                actual_index = self.jobs.index(job)
+                self._show_delete_confirmation(job, actual_index)
         except (ValueError, TypeError):
             pass
     
@@ -606,13 +744,14 @@ class JobTrackerApp:
 
     def _cycle_job_status(self):
         """Cycle through status options for current job."""
-        if not self.jobs:
+        display_jobs = self._get_display_jobs()
+        if not display_jobs:
             return
 
         try:
             focus_pos = self.job_list.focus
-            if 0 <= focus_pos < len(self.jobs):
-                current_job = self.jobs[focus_pos]
+            if 0 <= focus_pos < len(display_jobs):
+                current_job = display_jobs[focus_pos]
                 status_options = JobApplication.get_status_options()
 
                 try:
@@ -622,6 +761,7 @@ class JobTrackerApp:
                     next_index = 0
 
                 current_job.status = status_options[next_index]
+                self._apply_filter()  # Reapply filter after status change
                 self._refresh_job_list()
                 self.save_jobs()
                 # Restore focus to same position
@@ -631,7 +771,8 @@ class JobTrackerApp:
 
     def _move_focus(self, direction):
         """Move focus up or down in the job list."""
-        if not self.jobs:
+        display_jobs = self._get_display_jobs()
+        if not display_jobs:
             return
 
         try:
@@ -650,23 +791,26 @@ class JobTrackerApp:
 
     def _move_to_top(self):
         """Move focus to the first job."""
-        if self.jobs:
+        display_jobs = self._get_display_jobs()
+        if display_jobs:
             self.job_list.set_focus(0)
 
     def _move_to_bottom(self):
         """Move focus to the last job."""
-        if self.jobs:
+        display_jobs = self._get_display_jobs()
+        if display_jobs:
             self.job_list.set_focus(len(self.job_list) - 1)
 
     def _view_job_details(self):
         """Show detailed view of current job application."""
-        if not self.jobs:
+        display_jobs = self._get_display_jobs()
+        if not display_jobs:
             return
 
         try:
             focus_pos = self.job_list.focus
-            if 0 <= focus_pos < len(self.jobs):
-                job = self.jobs[focus_pos]
+            if 0 <= focus_pos < len(display_jobs):
+                job = display_jobs[focus_pos]
                 self._show_job_detail_dialog(job)
         except (ValueError, TypeError):
             pass
@@ -738,6 +882,10 @@ class JobTrackerApp:
             self._toggle_sort_direction()
         elif key_str == "t":
             self._toggle_sort_mode()
+
+        # Search/filter control
+        elif key_str == "/" or key == "/":
+            self._show_search_dialog()
 
         # VIM navigation bindings
         elif key_str == "j" or key == "down":
