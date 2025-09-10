@@ -410,7 +410,7 @@ class JobTrackerApp:
             else:
                 footer_text = " Multi-Select: [Space] select jobs [Ctrl+A] select all [m] exit multi-select mode "
         else:
-            footer_text = " [a]dd [d]el [s]tatus [v]iew | [/]filter [i]nfo [l]ine [r]emind [m]ulti | [c]opy | [j/k]nav [q]uit "
+            footer_text = " [a]dd [e]dit [d]el [s]tatus [v]iew | [/]filter [i]nfo [l]ine [r]emind [m]ulti | [c]opy | [j/k]nav [q]uit "
             
         if hasattr(self, 'footer_widget'):
             self.footer_widget.original_widget.set_text(footer_text)
@@ -602,150 +602,334 @@ class JobTrackerApp:
                     self.job_list.set_focus(0)
 
     def _add_job(self):
-        """Show multi-step dialog to add a new job application."""
-        self._current_job_data = {}
-        self._job_entry_step = 0
-        self._start_job_entry()
+        """Show unified job form dialog to add a new job application."""
+        self._show_job_form(job=None)
 
-    def _start_job_entry(self):
-        """Start the multi-step job entry process."""
-        steps = [
-            # Core information (required)
-            ("Company Name", "Enter company name:", "company", True),
-            ("Job Position", "Enter job position/title:", "position", True),
-            
-            # Application details
-            ("Application Link", "Enter job posting URL (optional):", "link", False),
-            ("Application Date", f"Date applied ({datetime.now().strftime('%Y-%m-%d')}):", "date_applied", False),
-            
-            # Interview information (optional)
-            ("Interview Date", "Interview date (YYYY-MM-DD, optional):", "interview_date", False),
-            ("Interview Time", "Interview time (HH:MM, optional):", "interview_time", False),
-            ("Interview Type", "Interview type (Phone/Video/In-person, optional):", "interview_type", False),
-            
-            # Contact information (optional)
-            ("Recruiter Name", "Recruiter/contact name (optional):", "recruiter_name", False),
-            ("Recruiter Email", "Recruiter email (optional):", "recruiter_email", False),
-            
-            # Salary information (optional) 
-            ("Salary Range Min", "Minimum salary (optional):", "salary_min", False),
-            ("Salary Range Max", "Maximum salary (optional):", "salary_max", False),
-            
-            # Notes and follow-up
-            ("Notes", "Enter any notes (optional):", "notes", False),
-            ("Next Follow-up", "Next follow-up date (YYYY-MM-DD, optional):", "next_followup", False),
-        ]
+    def _edit_job(self):
+        """Show unified job form dialog to edit the currently selected job."""
+        display_jobs = self._get_display_jobs()
+        if not display_jobs:
+            return
 
-        if self._job_entry_step < len(steps):
-            title, prompt, field, required = steps[self._job_entry_step]
+        try:
+            focus_pos = self.job_list.focus
+            if 0 <= focus_pos < len(display_jobs):
+                job = display_jobs[focus_pos]
+                self._show_job_form(job=job)
+        except (ValueError, TypeError):
+            pass
 
-            # Pre-fill date field with current date
-            default_value = (
-                datetime.now().strftime("%Y-%m-%d") if field == "date_applied" else ""
-            )
-
-            self._show_job_input_dialog(title, prompt, field, required, default_value)
-        else:
-            self._finalize_job_entry()
-
-    def _show_job_input_dialog(self, title, prompt, field, required, default_value=""):
-        """Show input dialog for job entry step."""
-        edit = urwid.Edit(f"{prompt} ", default_value)
-
-        def handle_input(key):
-            if key == "enter":
-                value = edit.get_edit_text().strip()
-                if required and not value:
-                    # Show error and stay in dialog
-                    return
-
-                self._current_job_data[field] = value
-                self._job_entry_step += 1
+    def _show_job_form(self, job=None):
+        """Show unified job form for add or edit mode."""
+        is_edit_mode = job is not None
+        form_title = "Edit Job Application" if is_edit_mode else "Add Job Application"
+        
+        # Create form widgets
+        self.form_widgets = self._create_form_widgets(job)
+        
+        # Build form layout (now returns a ListBox with focus management)
+        form_content = self._build_form_layout(form_title)
+        
+        # Create dialog (form_content is now a ListBox)
+        dialog = urwid.AttrMap(
+            urwid.LineBox(urwid.Padding(form_content, left=2, right=2)), "body"
+        )
+        
+        overlay = urwid.Overlay(
+            dialog, self.ui, align="center", width=80, valign="middle", height=25
+        )
+        
+        def handle_form_input(key):
+            if key == "tab":
+                self._focus_next_field()
+            elif key == "shift tab":
+                self._focus_previous_field()
+            elif key == "enter":
+                # Save the form
+                self._save_job_form(job, is_edit_mode)
                 self.main_loop.widget = self.ui
                 self.main_loop.unhandled_input = old_handler
-                self._start_job_entry()  # Move to next step
-
             elif key == "esc":
-                # Cancel job entry
+                # Cancel the form
                 self.main_loop.widget = self.ui
                 self.main_loop.unhandled_input = old_handler
             else:
+                # Let the key pass through to the currently focused widget
                 return key
-
-        # Build dialog content
-        step_info = f"Step {self._job_entry_step + 1} of 13"
-        required_text = " (Required)" if required else " (Optional)"
-
-        dialog_content = urwid.Pile(
-            [
-                urwid.Text(("header", f"{title}{required_text}"), align="center"),
-                urwid.Text(("body", step_info), align="center"),
-                urwid.Divider(),
-                edit,
-                urwid.Divider(),
-                urwid.Text("Press Enter to continue, Esc to cancel", align="center"),
-            ]
-        )
-
-        dialog = urwid.Filler(
-            urwid.AttrMap(
-                urwid.LineBox(urwid.Padding(dialog_content, left=2, right=2)), "body"
-            )
-        )
-
-        overlay = urwid.Overlay(
-            dialog, self.ui, align="center", width=60, valign="middle", height=9
-        )
-
+        
         old_handler = self.main_loop.unhandled_input
-        self.main_loop.unhandled_input = handle_input
+        self.main_loop.unhandled_input = handle_form_input
         self.main_loop.widget = overlay
-
-    def _finalize_job_entry(self):
-        """Create and save the new job application."""
-        # Set last_contact to application date by default
-        app_date = self._current_job_data.get("date_applied", datetime.now().strftime("%Y-%m-%d"))
         
-        job = JobApplication(
-            company=self._current_job_data.get("company", ""),
-            position=self._current_job_data.get("position", ""),
-            date_applied=app_date,
-            link=self._current_job_data.get("link", ""),
-            notes=self._current_job_data.get("notes", ""),
-            status="Applied",
-            # Interview tracking
-            interview_date=self._current_job_data.get("interview_date", ""),
-            interview_time=self._current_job_data.get("interview_time", ""),
-            interview_type=self._current_job_data.get("interview_type", ""),
-            # Follow-up tracking 
-            last_contact=app_date,  # Set to application date initially
-            next_followup=self._current_job_data.get("next_followup", ""),
-            # Salary information
-            salary_min=self._current_job_data.get("salary_min", ""),
-            salary_max=self._current_job_data.get("salary_max", ""),
-            salary_offered=self._current_job_data.get("salary_offered", ""),
-            # Contact information
-            recruiter_name=self._current_job_data.get("recruiter_name", ""),
-            recruiter_email=self._current_job_data.get("recruiter_email", ""),
-            recruiter_phone=self._current_job_data.get("recruiter_phone", ""),
-        )
+        # Set initial focus to the first form field
+        self._focus_first_field()
 
-        self.jobs.append(job)
+    def _create_form_widgets(self, job=None):
+        """Create all form field widgets, pre-populated if editing."""
+        # Pre-fill with job data if editing, or default values if adding
+        if job:
+            values = {
+                'company': job.company,
+                'position': job.position,
+                'date_applied': job.date_applied,
+                'link': job.link,
+                'notes': job.notes,
+                'interview_date': job.interview_date,
+                'interview_time': job.interview_time,
+                'interview_type': job.interview_type,
+                'recruiter_name': job.recruiter_name,
+                'recruiter_email': job.recruiter_email,
+                'recruiter_phone': job.recruiter_phone,
+                'last_contact': job.last_contact,
+                'next_followup': job.next_followup,
+                'salary_min': job.salary_min,
+                'salary_max': job.salary_max,
+                'salary_offered': job.salary_offered,
+            }
+        else:
+            # Default values for new job
+            today = datetime.now().strftime("%Y-%m-%d")
+            values = {
+                'company': '',
+                'position': '',
+                'date_applied': today,
+                'link': '',
+                'notes': '',
+                'interview_date': '',
+                'interview_time': '',
+                'interview_type': '',
+                'recruiter_name': '',
+                'recruiter_email': '',
+                'recruiter_phone': '',
+                'last_contact': today,
+                'next_followup': '',
+                'salary_min': '',
+                'salary_max': '',
+                'salary_offered': '',
+            }
         
-        # Apply sorting and refresh
+        # Create form field widgets
+        widgets = {}
+        
+        # Basic Information
+        widgets['company'] = urwid.Edit("Company: ", values['company'])
+        widgets['position'] = urwid.Edit("Position: ", values['position'])
+        widgets['date_applied'] = urwid.Edit("Date Applied: ", values['date_applied'])
+        widgets['link'] = urwid.Edit("Job Link: ", values['link'])
+        widgets['notes'] = urwid.Edit("Notes: ", values['notes'])
+        
+        # Interview Details
+        widgets['interview_date'] = urwid.Edit("Interview Date: ", values['interview_date'])
+        widgets['interview_time'] = urwid.Edit("Interview Time: ", values['interview_time'])
+        widgets['interview_type'] = urwid.Edit("Interview Type: ", values['interview_type'])
+        
+        # Contact Information
+        widgets['recruiter_name'] = urwid.Edit("Recruiter Name: ", values['recruiter_name'])
+        widgets['recruiter_email'] = urwid.Edit("Recruiter Email: ", values['recruiter_email'])
+        widgets['recruiter_phone'] = urwid.Edit("Recruiter Phone: ", values['recruiter_phone'])
+        
+        # Follow-up Tracking
+        widgets['last_contact'] = urwid.Edit("Last Contact: ", values['last_contact'])
+        widgets['next_followup'] = urwid.Edit("Next Follow-up: ", values['next_followup'])
+        
+        # Salary Information
+        widgets['salary_min'] = urwid.Edit("Salary Min: ", values['salary_min'])
+        widgets['salary_max'] = urwid.Edit("Salary Max: ", values['salary_max'])
+        widgets['salary_offered'] = urwid.Edit("Salary Offered: ", values['salary_offered'])
+        
+        return widgets
+
+    def _build_form_layout(self, form_title):
+        """Build form layout with grouped fields and focus support."""
+        # Create a list of focusable widgets in order
+        self.form_focusable_widgets = []
+        content = []
+        
+        # Header
+        content.extend([
+            urwid.Text(("header", form_title), align="center"),
+            urwid.Divider(),
+        ])
+        
+        # Basic Information Section
+        content.append(urwid.Text(("focus", "═══ BASIC INFORMATION ═══"), align="center"))
+        for field_name in ['company', 'position', 'date_applied', 'link', 'notes']:
+            widget = self.form_widgets[field_name]
+            self.form_focusable_widgets.append(widget)
+            content.append(widget)
+        content.append(urwid.Divider())
+        
+        # Interview Details Section
+        content.append(urwid.Text(("focus", "═══ INTERVIEW DETAILS ═══"), align="center"))
+        for field_name in ['interview_date', 'interview_time', 'interview_type']:
+            widget = self.form_widgets[field_name]
+            self.form_focusable_widgets.append(widget)
+            content.append(widget)
+        content.append(urwid.Divider())
+        
+        # Contact Information Section
+        content.append(urwid.Text(("focus", "═══ CONTACT INFORMATION ═══"), align="center"))
+        for field_name in ['recruiter_name', 'recruiter_email', 'recruiter_phone']:
+            widget = self.form_widgets[field_name]
+            self.form_focusable_widgets.append(widget)
+            content.append(widget)
+        content.append(urwid.Divider())
+        
+        # Follow-up Tracking Section
+        content.append(urwid.Text(("focus", "═══ FOLLOW-UP TRACKING ═══"), align="center"))
+        for field_name in ['last_contact', 'next_followup']:
+            widget = self.form_widgets[field_name]
+            self.form_focusable_widgets.append(widget)
+            content.append(widget)
+        content.append(urwid.Divider())
+        
+        # Salary Information Section
+        content.append(urwid.Text(("focus", "═══ SALARY INFORMATION ═══"), align="center"))
+        for field_name in ['salary_min', 'salary_max', 'salary_offered']:
+            widget = self.form_widgets[field_name]
+            self.form_focusable_widgets.append(widget)
+            content.append(widget)
+        content.append(urwid.Divider())
+        
+        # Instructions
+        content.append(urwid.Text("Tab/Shift+Tab: Navigate | Enter: Save | Esc: Cancel", align="center"))
+        
+        # Create a ListBox for proper focus management
+        self.form_listbox = urwid.ListBox(urwid.SimpleFocusListWalker(content))
+        return self.form_listbox
+
+    def _focus_next_field(self):
+        """Move focus to the next form field."""
+        if not hasattr(self, 'form_focusable_widgets') or not self.form_focusable_widgets:
+            return
+            
+        # Find current widget focus position in the list
+        try:
+            current_focus_pos = self.form_listbox.focus_position
+            current_walker = self.form_listbox.body
+            
+            # Find the next focusable widget after current position
+            for i in range(current_focus_pos + 1, len(current_walker)):
+                widget = current_walker[i]
+                if widget in self.form_focusable_widgets:
+                    self.form_listbox.set_focus(i)
+                    return
+            
+            # If we reach the end, wrap to first focusable widget
+            for i in range(len(current_walker)):
+                widget = current_walker[i]
+                if widget in self.form_focusable_widgets:
+                    self.form_listbox.set_focus(i)
+                    return
+        except (ValueError, AttributeError):
+            # Fallback to first focusable widget
+            self._focus_first_field()
+
+    def _focus_previous_field(self):
+        """Move focus to the previous form field."""
+        if not hasattr(self, 'form_focusable_widgets') or not self.form_focusable_widgets:
+            return
+            
+        try:
+            current_focus_pos = self.form_listbox.focus_position
+            current_walker = self.form_listbox.body
+            
+            # Find the previous focusable widget before current position
+            for i in range(current_focus_pos - 1, -1, -1):
+                widget = current_walker[i]
+                if widget in self.form_focusable_widgets:
+                    self.form_listbox.set_focus(i)
+                    return
+            
+            # If we reach the beginning, wrap to last focusable widget
+            for i in range(len(current_walker) - 1, -1, -1):
+                widget = current_walker[i]
+                if widget in self.form_focusable_widgets:
+                    self.form_listbox.set_focus(i)
+                    return
+        except (ValueError, AttributeError):
+            # Fallback to first focusable widget
+            self._focus_first_field()
+
+    def _focus_first_field(self):
+        """Set focus to the first form field."""
+        if hasattr(self, 'form_focusable_widgets') and self.form_focusable_widgets:
+            try:
+                current_walker = self.form_listbox.body
+                for i, widget in enumerate(current_walker):
+                    if widget in self.form_focusable_widgets:
+                        self.form_listbox.set_focus(i)
+                        return
+            except (ValueError, AttributeError):
+                pass
+
+    def _focus_current_field(self):
+        """Set focus to the current form field (legacy method for compatibility)."""
+        self._focus_first_field()
+
+    def _save_job_form(self, original_job, is_edit_mode):
+        """Save the job form data."""
+        # Validate required fields
+        company = self.form_widgets['company'].get_edit_text().strip()
+        position = self.form_widgets['position'].get_edit_text().strip()
+        
+        if not company:
+            # In a real implementation, we'd show an error message
+            return False
+        if not position:
+            return False
+            
+        # Collect all form data
+        job_data = {}
+        for field_name, widget in self.form_widgets.items():
+            job_data[field_name] = widget.get_edit_text().strip()
+        
+        if is_edit_mode:
+            # Update existing job
+            original_job.company = job_data['company']
+            original_job.position = job_data['position']
+            original_job.date_applied = job_data['date_applied']
+            original_job.link = job_data['link']
+            original_job.notes = job_data['notes']
+            original_job.interview_date = job_data['interview_date']
+            original_job.interview_time = job_data['interview_time']
+            original_job.interview_type = job_data['interview_type']
+            original_job.recruiter_name = job_data['recruiter_name']
+            original_job.recruiter_email = job_data['recruiter_email']
+            original_job.recruiter_phone = job_data['recruiter_phone']
+            original_job.last_contact = job_data['last_contact']
+            original_job.next_followup = job_data['next_followup']
+            original_job.salary_min = job_data['salary_min']
+            original_job.salary_max = job_data['salary_max']
+            original_job.salary_offered = job_data['salary_offered']
+        else:
+            # Create new job
+            new_job = JobApplication(
+                company=job_data['company'],
+                position=job_data['position'],
+                date_applied=job_data['date_applied'],
+                status="Applied",
+                link=job_data['link'],
+                notes=job_data['notes'],
+                interview_date=job_data['interview_date'],
+                interview_time=job_data['interview_time'],
+                interview_type=job_data['interview_type'],
+                recruiter_name=job_data['recruiter_name'],
+                recruiter_email=job_data['recruiter_email'],
+                recruiter_phone=job_data['recruiter_phone'],
+                last_contact=job_data['last_contact'],
+                next_followup=job_data['next_followup'],
+                salary_min=job_data['salary_min'],
+                salary_max=job_data['salary_max'],
+                salary_offered=job_data['salary_offered'],
+            )
+            self.jobs.append(new_job)
+        
+        # Refresh and save
         self._apply_sort_and_refresh()
         self.save_jobs()
-        
-        # Try to focus on the newly added job
-        try:
-            display_jobs = self._get_display_jobs()
-            new_index = display_jobs.index(job)
-            if 0 <= new_index < len(self.job_list):
-                self.job_list.set_focus(new_index)
-        except (ValueError, AttributeError):
-            # Job might be filtered out or focus failed, default to top
-            if len(self.job_list) > 0:
-                self.job_list.set_focus(0)
+        return True
+
 
     def _show_input_dialog(self, title, prompt, callback):
         """Show an input dialog."""
@@ -1888,6 +2072,8 @@ class JobTrackerApp:
             raise urwid.ExitMainLoop()
         elif key_str == "a":
             self._add_job()
+        elif key_str == "e":
+            self._edit_job()
         elif key_str == "d":
             self._delete_current_job()
         elif key_str == "s":
